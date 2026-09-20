@@ -7,7 +7,10 @@ denied, or will need a special human permission.
 
 All core financial and security functions use locally installed software that is free and open-source.
 Gemini reporting is optional and will default to deterministic templates if there's no API.
-There's no paid service necessary for the demo.
+
+## Live Demo
+
+Try the deployed application: [CreditDelta MCP Guardian](https://creditdelta-mcp-guardian.streamlit.app/)
 
 ## Why this exists
 
@@ -28,6 +31,7 @@ flowchart LR
     H --> L
     X --> L
 ```
+
 
 ## Capabilities
 
