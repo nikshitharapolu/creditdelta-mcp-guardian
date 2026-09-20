@@ -1,0 +1,25 @@
+[theme]
+base = "dark"
+primaryColor = "#7C8CFF"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#171D2B"
+textColor = "#F4F6FB"
+font = "sans-serif"
+headingFont = "sans-serif"
+baseFontSize = 18
+baseFontWeight = 400
+metricValueFontSize = "34px"
+metricValueFontWeight = 650
+baseRadius = "0.75rem"
+buttonRadius = "0.65rem"
+borderColor = "#30394D"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "type"
+showErrorLinks = false
+
+[browser]
+gatherUsageStats = false

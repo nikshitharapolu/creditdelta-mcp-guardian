@@ -1,0 +1,14 @@
+services:
+  dashboard:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - guardian_data:/app/.creditdelta_data
+    environment:
+      SEC_USER_AGENT: "${SEC_USER_AGENT:-CreditDelta educational-project contact@example.com}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL: "${GEMINI_MODEL:-gemini-3.6-flash}"
+
+volumes:
+  guardian_data:
