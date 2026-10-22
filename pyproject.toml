@@ -5,40 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "creditdelta-mcp"
 version = "1.4.0"
-description = "Evidence-backed SEC financial analysis with MCP security controls and grounded LLM reporting."
+description = "A secure MCP server for evidence-backed SEC financial comparisons."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [
-  { name = "Nikshitha Rapolu" }
-]
-keywords = [
-  "mcp",
-  "model-context-protocol",
-  "security",
-  "llm",
-  "financial-analysis",
-  "sec",
-  "streamlit",
-]
-
 dependencies = [
   "mcp[cli]>=2.0,<3",
 ]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=8,<9",
-  "uv>=0.8,<1",
-]
-dashboard = [
-  "streamlit>=1.50,<2",
-  "google-genai>=1.0,<2",
-]
+dev = ["pytest>=8,<9", "uv>=0.8,<1"]
+dashboard = ["streamlit>=1.50,<2", "google-genai>=1.0,<2"]
 
 [project.scripts]
 creditdelta-mcp = "creditdelta_mcp.server:main"
 creditdelta-benchmark = "creditdelta_mcp.benchmark:main"
+creditdelta-evaluate = "creditdelta_mcp.evaluation:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,0 +1,99 @@
+{
+  "summary": {
+    "total_labeled_cases": 150,
+    "guardian_cases": 90,
+    "financial_cases": 30,
+    "report_cases": 30,
+    "report_mode": "deterministic-fallback"
+  },
+  "guardian": {
+    "total_cases": 90,
+    "correct": 90,
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "attack_recall": 1.0,
+    "safe_false_positive_rate": 0.0,
+    "controlled_action_accuracy": 1.0,
+    "per_class": {
+      "ALLOW": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 30
+      },
+      "DENY": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 30
+      },
+      "REQUIRE_APPROVAL": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 30
+      }
+    },
+    "confusion_matrix": {
+      "ALLOW": {
+        "ALLOW": 30,
+        "DENY": 0,
+        "REQUIRE_APPROVAL": 0
+      },
+      "DENY": {
+        "ALLOW": 0,
+        "DENY": 30,
+        "REQUIRE_APPROVAL": 0
+      },
+      "REQUIRE_APPROVAL": {
+        "ALLOW": 0,
+        "DENY": 0,
+        "REQUIRE_APPROVAL": 30
+      }
+    },
+    "latency": {
+      "average_ms": 0.0115,
+      "p50_ms": 0.0031,
+      "p95_ms": 0.0338
+    },
+    "failed_cases": []
+  },
+  "financial": {
+    "total_cases": 30,
+    "correct": 30,
+    "accuracy": 1.0,
+    "field_accuracy": {
+      "current_value": 1.0,
+      "previous_value": 1.0,
+      "absolute_change": 1.0,
+      "percent_change": 1.0,
+      "direction": 1.0,
+      "current_accession": 1.0,
+      "previous_accession": 1.0
+    },
+    "latency": {
+      "average_ms": 0.005,
+      "p50_ms": 0.004,
+      "p95_ms": 0.0125
+    },
+    "failed_cases": []
+  },
+  "reports": {
+    "total_cases": 30,
+    "mode": "deterministic-fallback",
+    "source_counts": {
+      "template": 30
+    },
+    "success_rate": 1.0,
+    "numeric_consistency": 1.0,
+    "direction_consistency": 1.0,
+    "unsupported_numeric_claim_rate": 0.0,
+    "required_field_coverage": 1.0,
+    "latency": {
+      "average_ms": 0.0027,
+      "p50_ms": 0.0023,
+      "p95_ms": 0.0047
+    },
+    "failed_cases": []
+  }
+}
