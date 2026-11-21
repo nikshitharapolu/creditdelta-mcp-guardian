@@ -11,12 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from creditdelta_mcp.guardian import Decision, PolicyEngine
+from creditdelta_mcp.ai_guardian import AIReviewer, assess
 
 
 class GuardedExecutor:
     """Enforce Guardian decisions before executing registered local tools."""
 
-    def __init__(self, data_directory: str | Path = ".creditdelta_data") -> None:
+    def __init__(self, data_directory: str | Path = ".creditdelta_data", reviewer: AIReviewer | None = None) -> None:
+        self.reviewer = reviewer
         self.data_directory = Path(data_directory).resolve()
         self.reports_directory = self.data_directory / "reports"
         self.trash_directory = self.data_directory / "trash"
@@ -27,9 +29,16 @@ class GuardedExecutor:
         self.policy = PolicyEngine(str(self.reports_directory))
         self._initialize_database()
 
-    def propose(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def inspect(self, tool_name: str, arguments: dict[str, Any], context: str = "") -> dict[str, Any]:
+        """Preview a decision without execution or approval creation."""
+        result, details = assess(self.policy, self.reviewer, tool_name, arguments, context)
+        return {**result.to_dict(), **details}
+
+    def propose(self, tool_name: str, arguments: dict[str, Any], context: str = "") -> dict[str, Any]:
         """Evaluate a call, executing only calls that are immediately allowed."""
-        result = self.policy.evaluate(tool_name, arguments)
+        if not isinstance(context, str) or len(context) > 8000:
+            raise ValueError("Context must be text of at most 8000 characters.")
+        result, details = assess(self.policy, self.reviewer, tool_name, arguments, context)
         approval_id = None
         execution = None
         status = result.decision.value
@@ -39,11 +48,12 @@ class GuardedExecutor:
             status = "EXECUTED"
         elif result.decision == Decision.REQUIRE_APPROVAL:
             approval_id = uuid.uuid4().hex
-            self._store_pending(approval_id, tool_name, arguments)
+            self._store_pending(approval_id, tool_name, arguments, context)
 
-        self._write_audit(tool_name, arguments, result.decision.value, result.risk, status)
+        self._write_audit(tool_name, arguments, result.decision.value, result.risk, status, details)
         return {
             **result.to_dict(),
+            **details,
             "status": status,
             "approval_id": approval_id,
             "result": execution,
@@ -53,14 +63,23 @@ class GuardedExecutor:
         """Approve or reject one pending action exactly once."""
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT tool_name, arguments_json, status FROM approvals WHERE id = ?",
+                "SELECT tool_name, arguments_json, status, context, ai_required FROM approvals WHERE id = ?",
                 (approval_id,),
             ).fetchone()
             if row is None:
                 raise ValueError("Approval ID was not found.")
-            tool_name, arguments_json, status = row
+            tool_name, arguments_json, status, context, ai_required = row
         if status != "PENDING":
             raise ValueError(f"Approval has already been resolved as {status}.")
+
+        # Claim atomically so concurrent approvals cannot execute twice.
+        with self._connect() as connection:
+            claimed = connection.execute(
+                "UPDATE approvals SET status = 'RESOLVING' WHERE id = ? AND status = 'PENDING'",
+                (approval_id,),
+            )
+            if claimed.rowcount != 1:
+                raise ValueError("Approval is already being resolved.")
 
         arguments = json.loads(arguments_json)
         if not approve:
@@ -73,29 +92,42 @@ class GuardedExecutor:
             return {"approval_id": approval_id, "status": "REJECTED", "result": None}
 
         # Re-evaluate at execution time so changed policies fail closed.
-        policy_result = self.policy.evaluate(tool_name, arguments)
+        # Record unavailable review after a config change; explicit human approval
+        # may proceed under fixed policy, just as during a provider outage.
+        reviewer = self.reviewer
+        if ai_required and reviewer is None:
+            reviewer = AIReviewer(lambda _: "")
+        policy_result, details = assess(self.policy, reviewer, tool_name, arguments, context)
         if policy_result.decision == Decision.DENY:
             with self._connect() as connection:
                 connection.execute(
                     "UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ?",
                     ("DENIED_BY_POLICY", self._now(), approval_id),
                 )
-            self._write_audit(tool_name, arguments, "DENY", policy_result.risk, "DENIED_BY_POLICY")
-            return {"approval_id": approval_id, "status": "DENIED_BY_POLICY", "result": None}
+            self._write_audit(tool_name, arguments, "DENY", policy_result.risk, "DENIED_BY_POLICY", details)
+            return {"approval_id": approval_id, "status": "DENIED_BY_POLICY", "result": None, **details}
 
-        execution = self._execute(tool_name, arguments)
+        try:
+            execution = self._execute(tool_name, arguments)
+        except Exception:
+            with self._connect() as connection:
+                connection.execute("UPDATE approvals SET status = 'EXECUTION_FAILED', resolved_at = ? WHERE id = ?",
+                                   (self._now(), approval_id))
+            self._write_audit(tool_name, arguments, policy_result.decision.value, policy_result.risk, "EXECUTION_FAILED", details)
+            raise
         with self._connect() as connection:
             connection.execute(
                 "UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ?",
                 ("APPROVED_AND_EXECUTED", self._now(), approval_id),
             )
         self._write_audit(
-            tool_name, arguments, policy_result.decision.value, policy_result.risk, "APPROVED_AND_EXECUTED"
+            tool_name, arguments, policy_result.decision.value, policy_result.risk, "APPROVED_AND_EXECUTED", details
         )
         return {
             "approval_id": approval_id,
             "status": "APPROVED_AND_EXECUTED",
             "result": execution,
+            **details,
         }
 
     def list_pending(self) -> list[dict[str, Any]]:
@@ -119,7 +151,7 @@ class GuardedExecutor:
             raise ValueError("Limit must be between 1 and 100.")
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT created_at, tool_name, arguments_redacted_json, decision, risk, status "
+                "SELECT created_at, tool_name, arguments_redacted_json, decision, risk, status, review_json "
                 "FROM audit_events ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -131,6 +163,7 @@ class GuardedExecutor:
                 "decision": row[3],
                 "risk": row[4],
                 "status": row[5],
+                "review": json.loads(row[6]),
             }
             for row in rows
         ]
@@ -165,30 +198,32 @@ class GuardedExecutor:
             return {"status": "SIMULATED_EMAIL_SAVED", "recipient": record["recipient"]}
         raise ValueError(f"No executor is registered for tool '{tool_name}'.")
 
-    def _store_pending(self, approval_id: str, tool_name: str, arguments: dict[str, Any]) -> None:
+    def _store_pending(self, approval_id: str, tool_name: str, arguments: dict[str, Any], context: str = "") -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO approvals "
-                "(id, tool_name, arguments_json, arguments_redacted_json, status, created_at) "
-                "VALUES (?, ?, ?, ?, 'PENDING', ?)",
+                "(id, tool_name, arguments_json, arguments_redacted_json, status, created_at, context, ai_required) "
+                "VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?)",
                 (
                     approval_id,
                     tool_name,
                     json.dumps(arguments),
                     json.dumps(self._redact(arguments)),
                     self._now(),
+                    context,
+                    int(self.reviewer is not None),
                 ),
             )
 
     def _write_audit(
-        self, tool_name: str, arguments: dict[str, Any], decision: str, risk: str, status: str
+        self, tool_name: str, arguments: dict[str, Any], decision: str, risk: str, status: str, details: dict | None = None
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO audit_events "
-                "(created_at, tool_name, arguments_redacted_json, decision, risk, status) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (self._now(), tool_name, json.dumps(self._redact(arguments)), decision, risk, status),
+                "(created_at, tool_name, arguments_redacted_json, decision, risk, status, review_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (self._now(), tool_name, json.dumps(self._redact(arguments)), decision, risk, status, json.dumps(details or {})),
             )
 
     def _redact(self, value: Any, key: str = "") -> Any:
@@ -227,6 +262,16 @@ class GuardedExecutor:
                 );
                 """
             )
+
+            # Additive migration preserves existing approvals and audit records.
+            for table, column, definition in (
+                ("approvals", "context", "TEXT NOT NULL DEFAULT ''"),
+                ("approvals", "ai_required", "INTEGER NOT NULL DEFAULT 0"),
+                ("audit_events", "review_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ):
+                columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)

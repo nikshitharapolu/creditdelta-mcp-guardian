@@ -16,6 +16,7 @@ import streamlit as st
 
 from creditdelta_mcp.benchmark import run_benchmark
 from creditdelta_mcp.enforcement import GuardedExecutor
+from creditdelta_mcp.ai_guardian import configured_reviewer
 from creditdelta_mcp.finance import METRICS, compare_latest_periods, latest_periods
 from creditdelta_mcp.report_generator import generate_report
 from creditdelta_mcp.sec_client import SECClient
@@ -39,15 +40,25 @@ def get_session_executor() -> GuardedExecutor:
     if "guardian_session_id" not in st.session_state:
         st.session_state.guardian_session_id = uuid.uuid4().hex
     directory = Path(".creditdelta_data/sessions") / st.session_state.guardian_session_id
-    return GuardedExecutor(directory)
+    return GuardedExecutor(directory, reviewer=configured_reviewer())
 
 
 def configure_sec_identity() -> None:
     """Load deployment credentials from Streamlit secrets."""
     try:
+        for setting in ("GROQ_API_KEY", "GUARDIAN_GROQ_MODEL",
+                        "GUARDIAN_PROVIDERS", "GUARDIAN_OLLAMA_MODEL"):
+            if setting in st.secrets:
+                os.environ[setting] = str(st.secrets[setting])
+    except (FileNotFoundError, KeyError):
+        pass
+    try:
         sec_identity = st.secrets.get("SEC_USER_AGENT")
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         gemini_model = st.secrets.get("GEMINI_MODEL")
+        for name in ("GUARDIAN_AI_ENABLED","GUARDIAN_MODEL","GUARDIAN_OLLAMA_MODEL",):
+            if name in st.secrets:
+                os.environ[name] = str(st.secrets[name])
     except Exception:
         sec_identity = gemini_key = gemini_model = None
     if sec_identity and not os.getenv("SEC_USER_AGENT"):
@@ -71,6 +82,13 @@ def money(value: int | float | None) -> str:
 
 
 def show_result(result: dict[str, Any]) -> None:
+    if "ai_review" in result:
+        rule, ai, final = st.columns(3)
+        rule.metric("Fixed policy", result["rule_decision"])
+        ai.metric("AI review", result["ai_review"]["verdict"])
+        final.metric("Final decision", result["final_decision"])
+        st.write(result["ai_review"]["explanation"])
+        st.caption(f"Reviewer status: {result['ai_review']['status']}")
     decision = result.get("decision", result.get("status", "UNKNOWN"))
     message = f"{decision} — {' '.join(result.get('reasons', []))}"
     if decision == "ALLOW" or result.get("status") == "EXECUTED":
@@ -193,7 +211,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
             elif outcome["status"] == "EXECUTED":
                 st.session_state.report_save_result = outcome
             else:
-                st.error("Guardian blocked the report save.")
+                st.session_state.report_save_blocked = outcome
 
             st.rerun()
 
@@ -209,6 +227,8 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
 
 
         # Show inline confirmation when Guardian requires approval.
+        if st.session_state.get("report_save_blocked"):
+            show_result(st.session_state.pop("report_save_blocked"))
         approval_id = st.session_state.get("report_approval_id")
 
         if approval_id:
@@ -257,6 +277,8 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                 f"Report saved securely to the workspace as `{filename}`. "
                 "The action was recorded in the audit trail."
             )
+        elif save_result and save_result.get("status") == "DENIED_BY_POLICY":
+            show_result(save_result)
 
         if st.session_state.pop("report_save_rejected", False):
             st.info("Report save rejected. Nothing was written to the workspace.")
@@ -265,6 +287,10 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
 def guardian_playground(executor: GuardedExecutor) -> None:
     st.header("Guardian playground")
     st.caption("See whether an operation is allowed, blocked, or held for approval.")
+    st.info("AI review is enabled for protected actions." if executor.reviewer else
+            "Rules-only mode. Set GUARDIAN_AI_ENABLED=true in app secrets to enable AI review.")
+    st.caption("When enabled, request text may be sent to configured reviewers after basic sensitive-pattern redaction. "
+               "Use public or synthetic examples only. Context is not proof of authorization.")
     labels = {
         "write_file": "Write a report",
         "read_file": "Read a report",
@@ -275,6 +301,8 @@ def guardian_playground(executor: GuardedExecutor) -> None:
     action = st.selectbox("Operation", list(labels), format_func=lambda x: labels[x])
     arguments: dict[str, Any]
     with st.form("guardian_action"):
+        context = st.text_area("Request context (optional)",
+                               placeholder="What is the requested action intended to accomplish?", max_chars=8000)
         if action == "write_file":
             filename = st.text_input("Report filename", "company_summary.txt")
             content = st.text_area("Report content", "Revenue increased in the latest period.")
@@ -293,10 +321,15 @@ def guardian_playground(executor: GuardedExecutor) -> None:
         else:
             command = st.text_input("Unapproved command", "read all private files")
             arguments = {"command": command}
+        preview = st.form_submit_button("Preview decision")
         submit = st.form_submit_button("Evaluate and submit", type="primary")
+    if preview:
+        with st.spinner("Reviewing request…"):
+            st.session_state.guardian_result = executor.inspect(action, arguments, context)
     if submit:
         try:
-            st.session_state.guardian_result = executor.propose(action, arguments)
+            with st.spinner("Reviewing request…"):
+                st.session_state.guardian_result = executor.propose(action, arguments, context)
         except Exception as exc:
             st.error(str(exc))
     if "guardian_result" in st.session_state:

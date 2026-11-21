@@ -9,3 +9,4 @@ dist/
 .streamlit/secrets.toml
 .creditdelta_data/
 .DS_Store
+.streamlit/secrets.toml

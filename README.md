@@ -1,5 +1,10 @@
 # CreditDelta MCP Guardian
 
+Optional [AI-assisted Guardian review](docs/ai-guardian.md) now checks the intent
+of protected actions, with fixed rules and human approval remaining authoritative.
+The playground shows rule, AI, and final decisions. See the guide for activation,
+failure behavior, privacy limits, and live rules-versus-AI evaluation.
+
 CreditDelta MCP Guardian is a local, evidence-backed financial research server
 and security control layer for AI tool calls. CreditDelta exposes public SEC
 financial comparisons through MCP; Guardian decides whether requested actions

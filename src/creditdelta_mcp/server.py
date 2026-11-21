@@ -15,6 +15,7 @@ from mcp.server import MCPServer
 
 from creditdelta_mcp.benchmark import run_benchmark
 from creditdelta_mcp.enforcement import GuardedExecutor
+from creditdelta_mcp.ai_guardian import configured_reviewer
 from creditdelta_mcp.finance import METRICS, compare_latest_periods, latest_periods
 from creditdelta_mcp.guardian import PolicyEngine
 from creditdelta_mcp.sec_client import SECClient
@@ -23,7 +24,7 @@ from creditdelta_mcp.sec_client import SECClient
 mcp = MCPServer("CreditDelta")
 sec = SECClient()
 guardian = PolicyEngine()
-executor = GuardedExecutor()
+executor = GuardedExecutor(reviewer=configured_reviewer())
 
 
 @mcp.tool()
@@ -53,15 +54,15 @@ def compare_financials(cik: str, metric: str, form: str = "10-Q") -> dict:
 
 
 @mcp.tool()
-def evaluate_tool_call(tool_name: str, arguments: dict) -> dict:
+def evaluate_tool_call(tool_name: str, arguments: dict, context: str = "") -> dict:
     """Ask MCP Guardian whether a proposed tool call is safe to execute."""
-    return guardian.evaluate(tool_name, arguments).to_dict()
+    return executor.inspect(tool_name, arguments, context)
 
 
 @mcp.tool()
-def guarded_action(tool_name: str, arguments: dict) -> dict:
+def guarded_action(tool_name: str, arguments: dict, context: str = "") -> dict:
     """Evaluate and safely execute, block, or queue a protected local action."""
-    return executor.propose(tool_name, arguments)
+    return executor.propose(tool_name, arguments, context)
 
 
 @mcp.tool()
