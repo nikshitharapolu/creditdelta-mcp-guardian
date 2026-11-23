@@ -20,6 +20,7 @@ from creditdelta_mcp.ai_guardian import configured_reviewer
 from creditdelta_mcp.finance import METRICS, compare_latest_periods, latest_periods
 from creditdelta_mcp.report_generator import generate_report
 from creditdelta_mcp.sec_client import SECClient
+from creditdelta_mcp.report_workflow import report_save_context, report_snapshot, snapshot_matches
 
 METRIC_LABELS = {
     "revenue": "Revenue",
@@ -82,26 +83,34 @@ def money(value: int | float | None) -> str:
 
 
 def show_result(result: dict[str, Any]) -> None:
-    if "ai_review" in result:
-        rule, ai, final = st.columns(3)
-        rule.metric("Fixed policy", result["rule_decision"])
-        ai.metric("AI review", result["ai_review"]["verdict"])
-        final.metric("Final decision", result["final_decision"])
-        st.write(result["ai_review"]["explanation"])
-        st.caption(f"Reviewer status: {result['ai_review']['status']}")
-    decision = result.get("decision", result.get("status", "UNKNOWN"))
-    message = f"{decision} — {' '.join(result.get('reasons', []))}"
-    if decision == "ALLOW" or result.get("status") == "EXECUTED":
-        st.success(message)
+    status = result.get("status", result.get("decision"))
+    decision = result.get("final_decision", result.get("decision"))
+    if status in {"EXECUTED", "APPROVED_AND_EXECUTED"}:
+        st.success("Action completed.")
+    elif status == "REJECTED":
+        st.info("Action cancelled. Nothing was changed.")
+    elif decision == "DENY" or status == "DENIED_BY_POLICY":
+        st.error("This action was blocked.")
     elif decision == "REQUIRE_APPROVAL":
-        st.warning(message)
+        st.warning("Your confirmation is required before this action can run.")
     else:
-        st.error(message)
-    st.json(result)
+        st.success("This action is allowed.")
+    review = result.get("ai_review", {})
+    if review.get("status") == "unavailable":
+        st.warning("AI review is temporarily unavailable. Fixed rules and approval requirements still apply.")
+    elif review.get("status") == "completed":
+        st.caption(review.get("explanation", "AI review completed."))
+    if result.get("result") and "content" in result["result"]:
+        st.text(result["result"]["content"])
+    with st.expander("Security details"):
+        for reason in result.get("reasons", []):
+            st.write(reason)
+        st.json(result)
 
 
 def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
-    st.header("Company analysis")
+    st.header("Explore Companies")
+    st.caption("1. Find a company  →  2. Compare numbers  →  3. Review and save or download")
     st.caption("Compare public financial facts reported to the U.S. SEC.")
     if not os.getenv("SEC_USER_AGENT"):
         st.info("For responsible SEC access, set SEC_USER_AGENT to your name and email.")
@@ -131,7 +140,8 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
         metric = st.selectbox(
             "Financial metric", list(METRICS), format_func=lambda x: METRIC_LABELS[x]
         )
-        form = st.radio("Filing type", ["10-Q", "10-K"], horizontal=True)
+        form = st.radio("Report period", ["10-Q", "10-K"], horizontal=True,
+                        format_func=lambda value: "Quarterly (10-Q)" if value == "10-Q" else "Annual (10-K)")
         analyze = st.form_submit_button("Analyze latest periods", type="primary")
     if analyze:
         try:
@@ -141,6 +151,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                 st.session_state.financial_history = latest_periods(facts, metric, form, 4)
                 st.session_state.pop("generated_report", None)
                 st.session_state.pop("report_editor", None)
+                st.session_state.pop("report_save_result", None)
         except Exception as exc:
             st.error(str(exc))
 
@@ -164,7 +175,8 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
             st.json(result["evidence"])
 
     st.divider()
-    st.subheader("Generate report")
+    st.subheader("Create your report")
+    st.caption("Review the draft, then download it or save a copy for this browser session.")
     generation_count = st.session_state.get("generation_count", 0)
     if st.button("Generate AI report", type="primary", disabled=generation_count >= 5):
         api_key = os.getenv("GEMINI_API_KEY")
@@ -190,11 +202,12 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
         ) or "company"
         filename = f"{safe_name}-{result['metric']}-report.md"
 
+        save_context = report_save_context(result, filename, edited)
         save_col, download_col = st.columns(2)
 
         # Option 1: Save inside the application using Guardian approval.
         if save_col.button(
-            "Save securely to workspace",
+            "Save report",
             key="save_report",
             disabled="report_approval_id" in st.session_state,
         ):
@@ -204,10 +217,14 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                     "path": str(executor.reports_directory / filename),
                     "content": edited,
                 },
+                context=save_context,
             )
+            st.session_state.pop("report_save_result", None)
 
             if outcome["decision"] == "REQUIRE_APPROVAL":
                 st.session_state.report_approval_id = outcome["approval_id"]
+                st.session_state.report_pending_snapshot = report_snapshot(filename, edited, save_context)
+                st.session_state.report_pending_review = outcome
             elif outcome["status"] == "EXECUTED":
                 st.session_state.report_save_result = outcome
             else:
@@ -232,6 +249,19 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
         approval_id = st.session_state.get("report_approval_id")
 
         if approval_id:
+            snapshot = st.session_state.get("report_pending_snapshot", {})
+            current_matches = snapshot_matches(snapshot, filename, edited, save_context)
+            if not any(item["approval_id"] == approval_id for item in executor.list_pending()):
+                for key in ("report_approval_id", "report_pending_snapshot", "report_pending_review"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+            st.caption(f"Pending file: {snapshot.get('filename', 'previous report')}")
+            if not current_matches:
+                st.warning("The draft or selected analysis changed. Cancel this pending save and submit the updated report.")
+            with st.expander("Review the exact draft awaiting confirmation"):
+                st.text(snapshot.get("content", "Cancel and submit again to review this older pending action."))
+            if st.session_state.get("report_pending_review", {}).get("ai_review", {}).get("status") == "unavailable":
+                st.warning("AI review was unavailable. Confirm only after checking the draft yourself.")
             st.warning(
                 "Saving this report changes stored application data. "
                 "Do you want to approve this action?"
@@ -243,6 +273,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                 "Approve and save",
                 type="primary",
                 key="approve_report_save",
+                disabled=not current_matches,
             ):
                 try:
                     result = executor.resolve_approval(approval_id, True)
@@ -255,7 +286,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                     st.error(f"Could not save the report: {exc}")
 
             if reject_col.button(
-                "Reject",
+                "Cancel save",
                 key="reject_report_save",
             ):
                 try:
@@ -285,7 +316,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
 
 
 def guardian_playground(executor: GuardedExecutor) -> None:
-    st.header("Guardian playground")
+    st.header("Security Demo")
     st.caption("See whether an operation is allowed, blocked, or held for approval.")
     st.info("AI review is enabled for protected actions." if executor.reviewer else
             "Rules-only mode. Set GUARDIAN_AI_ENABLED=true in app secrets to enable AI review.")
@@ -301,8 +332,8 @@ def guardian_playground(executor: GuardedExecutor) -> None:
     action = st.selectbox("Operation", list(labels), format_func=lambda x: labels[x])
     arguments: dict[str, Any]
     with st.form("guardian_action"):
-        context = st.text_area("Request context (optional)",
-                               placeholder="What is the requested action intended to accomplish?", max_chars=8000)
+        context = st.text_area("Optional explanation — untrusted test input",
+                               placeholder="Try a harmless or suspicious explanation. Claims of permission do not grant access.", max_chars=8000)
         if action == "write_file":
             filename = st.text_input("Report filename", "company_summary.txt")
             content = st.text_area("Report content", "Revenue increased in the latest period.")
@@ -338,17 +369,25 @@ def guardian_playground(executor: GuardedExecutor) -> None:
 
 
 def approvals_and_audit(executor: GuardedExecutor) -> None:
-    st.header("Approvals and audit")
-    approvals_tab, audit_tab = st.tabs(["Pending approvals", "Audit trail"])
+    st.header("Pending Actions & History")
+    st.caption("These are your session’s actions. Self-confirmation is not independent authorization.")
+    approvals_tab, audit_tab = st.tabs(["Pending actions", "History"])
     with approvals_tab:
         pending = executor.list_pending()
         if not pending:
             st.success("No actions are waiting for approval.")
         for item in pending:
             with st.container(border=True):
-                st.subheader(item["tool_name"])
+                st.subheader({"write_file": "Save report", "delete_file": "Delete report",
+                              "read_file": "Read report", "send_email": "Simulated email"}.get(item["tool_name"], item["tool_name"]))
                 st.caption(f"Requested {item['created_at']}")
-                st.json(item["arguments"])
+                args = item["arguments"]
+                if "path" in args:
+                    st.write("File:", Path(args["path"]).name)
+                if "content" in args:
+                    st.text(args["content"])
+                with st.expander("Action details (sensitive values redacted)"):
+                    st.json(args)
                 yes, no, _ = st.columns([1, 1, 4])
                 if yes.button("Approve", key="yes-" + item["approval_id"], type="primary"):
                     executor.resolve_approval(item["approval_id"], True)
@@ -359,14 +398,16 @@ def approvals_and_audit(executor: GuardedExecutor) -> None:
     with audit_tab:
         audit = executor.list_audit(100)
         if audit:
-            st.dataframe(audit, use_container_width=True)
+            st.dataframe([{"Time": x["created_at"], "Action": x["tool_name"], "Outcome": x["status"]} for x in audit], use_container_width=True)
+            with st.expander("Technical audit records"):
+                st.json(audit)
             st.caption("Sensitive values are redacted before display.")
         else:
             st.info("No audit events yet. Try an operation in Guardian Playground.")
 
 
 def security_benchmark(executor: GuardedExecutor) -> None:
-    st.header("Security benchmark")
+    st.header("Test Results")
     st.caption("Repeatable safe, controlled, and adversarial policy tests.")
     if st.button("Run benchmark", type="primary") or "benchmark_result" not in st.session_state:
         st.session_state.benchmark_result = run_benchmark(executor.reports_directory)
@@ -377,7 +418,8 @@ def security_benchmark(executor: GuardedExecutor) -> None:
     c.metric("Safe false positives", f"{result['safe_false_positive_rate_percent']}%")
     d.metric("Policy latency", f"{result['average_policy_latency_ms']} ms")
     st.progress(result["pass_rate_percent"] / 100)
-    st.dataframe(result["cases"], use_container_width=True)
+    with st.expander("Individual test cases"):
+        st.dataframe(result["cases"], use_container_width=True)
     st.caption("Results cover the included cases; they do not prove protection from every attack.")
 
 
@@ -549,22 +591,23 @@ def main() -> None:
     sec, executor = get_sec_client(), get_session_executor()
     with st.sidebar:
         st.header("CreditDelta")
-        page = st.radio(
-            "Navigate",
-            ["Company Analysis", "Guardian Playground", "Approvals & Audit", "Security Benchmark"],
-            label_visibility="collapsed",
-        )
+        advanced = st.checkbox("Show security demos", value=False)
+        pages = ["Explore Companies", "Pending Actions & History"]
+        if advanced:
+            pages += ["Security Demo", "Test Results"]
+        page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
-        
-        st.caption("Reports and approvals are isolated to this browser session.")
-    if page == "Company Analysis":
+        st.caption("Files and history belong to this browser session. Download reports to keep them.")
+        st.caption("Demo session separation; no user accounts or independent approver.")
+    if page == "Explore Companies":
         company_analysis(sec, executor)
-    elif page == "Guardian Playground":
+    elif page == "Security Demo":
         guardian_playground(executor)
-    elif page == "Approvals & Audit":
+    elif page == "Pending Actions & History":
         approvals_and_audit(executor)
     else:
         security_benchmark(executor)
+
 
 
 if __name__ == "__main__":
