@@ -47,7 +47,7 @@ def get_session_executor() -> GuardedExecutor:
 def configure_sec_identity() -> None:
     """Load deployment credentials from Streamlit secrets."""
     try:
-        for setting in ("GROQ_API_KEY", "GUARDIAN_GROQ_MODEL",
+        for setting in ("GROQ_API_KEY", "GUARDIAN_GROQ_MODEL", "REPORT_GROQ_MODEL",
                         "GUARDIAN_PROVIDERS", "GUARDIAN_OLLAMA_MODEL"):
             if setting in st.secrets:
                 os.environ[setting] = str(st.secrets[setting])
@@ -182,7 +182,11 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
         api_key = os.getenv("GEMINI_API_KEY")
         model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         with st.spinner("Generating grounded report…"):
-            report, source = generate_report(result, api_key, model)
+            report, source = generate_report(
+                result, api_key, model,
+                groq_api_key=os.getenv("GROQ_API_KEY"),
+                groq_model=os.getenv("REPORT_GROQ_MODEL", "openai/gpt-oss-20b"),
+            )
         st.session_state.generated_report = report
         st.session_state.report_editor = report
         st.session_state.report_source = source
@@ -192,10 +196,11 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
 
     report = st.session_state.get("generated_report")
     if report:
-        if st.session_state.get("report_source") == "gemini":
-            st.success("AI-generated draft created from verified SEC facts.")
+        if st.session_state.get("report_source") in {"gemini", "groq"}:
+            provider = st.session_state.report_source.title()
+            st.success(f"AI draft generated with {provider}. Review it against the SEC facts below.")
         else:
-            st.info("Gemini was unavailable, so the deterministic template was used.")
+            st.info("AI report providers were unavailable or not configured. A template report was created from the SEC facts.")
         edited = st.text_area("Review and edit report", height=420, key="report_editor")
         safe_name = "-".join(
             part for part in result["company"].lower().replace(".", "").split() if part.isalnum()
