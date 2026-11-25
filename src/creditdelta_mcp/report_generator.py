@@ -103,7 +103,11 @@ def _groq_narrative(prompt: str, key: str, model: str) -> str:
     request = Request(
         "https://api.groq.com/openai/v1/chat/completions",
         data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={
+    "Authorization": f"Bearer {key}",
+    "Content-Type": "application/json",
+    "User-Agent": "CreditDelta-Guardian/1.0",
+},
         method="POST",
     )
     with build_opener(ProxyHandler({}), _NoRedirect()).open(request, timeout=15) as response:
