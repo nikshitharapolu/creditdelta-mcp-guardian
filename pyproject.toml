@@ -14,8 +14,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "uv>=0.8,<1"]
-dashboard = ["streamlit>=1.50,<2", "google-genai>=1.0,<2",  "supabase>=2,<3",]
-
+dashboard = [
+  "streamlit>=1.50,<2",
+  "google-genai>=1.0,<2",
+  "supabase>=2,<3",
+]
 [project.scripts]
 creditdelta-mcp = "creditdelta_mcp.server:main"
 creditdelta-benchmark = "creditdelta_mcp.benchmark:main"
