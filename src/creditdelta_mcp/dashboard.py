@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-from creditdelta_mcp.auth import show_account
-from creditdelta_mcp.my_reports import save_report, show_my_reports
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,6 +11,10 @@ from typing import Any
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
+
+from creditdelta_mcp.auth import show_account
+from creditdelta_mcp.my_reports import save_report, show_my_reports
+from creditdelta_mcp.ask_creditdelta import show_ask_creditdelta
 
 import streamlit as st
 
@@ -639,19 +641,21 @@ def main() -> None:
         user = show_account()
         st.divider()
         advanced = st.checkbox("Show security demos", value=False)
-        pages = ["Explore Companies", "My Reports", "Pending Actions & History"]
+        pages = ["Explore Companies", "Ask CreditDelta", "My Reports", "Pending Actions & History"]
         if advanced:
             pages += ["Security Demo", "Test Results"]
         page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
-        st.caption("Files and history belong to this browser session. Download reports to keep them.")
-        st.caption("Demo session separation; no user accounts or independent approver.")
+        st.caption("My Reports stores private reports in your account.")
+        st.caption("Security demo files belong to this browser session.")
     if page == "Explore Companies":
         company_analysis(sec, executor)
     elif page == "Security Demo":
         guardian_playground(executor)
     elif page == "Pending Actions & History":
         approvals_and_audit(executor)
+    elif page == "Ask CreditDelta":
+        show_ask_creditdelta(sec, executor)
     elif page == "My Reports":
         show_my_reports()
     else:
