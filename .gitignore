@@ -10,3 +10,5 @@ dist/
 .creditdelta_data/
 .DS_Store
 .streamlit/secrets.toml
+/evaluation/results/ai-review.json
+/evaluation/results/ai-review-diagnostics.json
