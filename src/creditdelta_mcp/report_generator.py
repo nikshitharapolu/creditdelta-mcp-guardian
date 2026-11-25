@@ -124,18 +124,22 @@ def _groq_narrative(prompt: str, key: str, model: str) -> str:
 def generate_report(
     comparison: dict[str, Any], api_key: str | None, model: str = "gemini-2.5-flash",
     *, groq_api_key: str | None = None, groq_model: str = "openai/gpt-oss-20b",
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     """Try Gemini, then Groq, then template. Never execute model output.
 
     Keys are explicit so callers control which providers may receive public facts.
     AI prose is a draft, not verified by the deterministic facts appendix.
     """
+    attempts = diagnostics if diagnostics is not None else []
+    attempts.clear()
     prompt = build_prompt(comparison)
     for provider, key, selected_model, transport in (
         ("gemini", api_key, model, _gemini_narrative),
         ("groq", groq_api_key, groq_model, _groq_narrative),
     ):
         if not key or not key.strip():
+            attempts.append({"provider": provider, "status": "not_configured"})
             continue
         try:
             narrative = transport(prompt, key.strip(), selected_model)
@@ -147,8 +151,22 @@ def generate_report(
                 "## Disclaimer\n\nThis AI-generated draft is for educational and research purposes "
                 "only. It is not a credit rating or investment advice. Review AI prose against the facts above."
             )
+            attempts.append({"provider": provider, "status": "completed"})
             return report, provider
         except Exception as exc:
+            code = getattr(exc, "code", None)
+            if not isinstance(code, int):
+                code = getattr(exc, "status_code", None)
+            category = {401: "authentication", 403: "forbidden", 404: "model_not_found",
+                        429: "rate_limited", 503: "provider_unavailable"}.get(code, "provider_error")
+            if isinstance(exc, ImportError):
+                category = "dependency_import"
+            elif isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+                category = "timeout"
+            elif isinstance(exc, ValueError):
+                category = "invalid_response"
+            attempts.append({"provider": provider, "status": "unavailable", "category": category,
+                             "http_status": code if isinstance(code, int) else None})
             # Do not log raw provider errors, prompts, response text, or credentials.
             logging.getLogger(__name__).warning(
                 "%s report unavailable (%s, HTTP status=%s); trying fallback",
