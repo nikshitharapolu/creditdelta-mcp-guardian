@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from creditdelta_mcp.auth import get_user_client
+from creditdelta_mcp.guardian import Decision, PolicyEngine
 
 
 def save_report(title, company, metric, content):
@@ -21,17 +22,45 @@ def save_report(title, company, metric, content):
     }).execute()
 
 
-def change_trash_status(report_id, move_to_trash):
+def change_trash_status(report_id, move_to_trash, *, confirmed=False):
     client = get_user_client()
-
-    # Recheck authentication when performing the action.
     user = client.auth.get_user().user
     if not user:
         raise ValueError("Please sign in again.")
 
+    # Fetch ownership from the database, never from a form field.
+    reports = (
+        client.table("reports")
+        .select("id,user_id")
+        .eq("id", report_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
+        .data
+    )
+
+    owner_id = reports[0]["user_id"] if reports else None
+    action = "trash_report" if move_to_trash else "restore_report"
+
+    decision = PolicyEngine().evaluate_report_action(
+        action,
+        authenticated_user_id=user.id,
+        report_owner_id=owner_id,
+    )
+
+    if decision.decision == Decision.DENY:
+        raise ValueError("Report unavailable.")
+
+    if (
+        decision.decision == Decision.REQUIRE_APPROVAL
+        and confirmed is not True
+    ):
+        raise ValueError("Please confirm before moving this report to Trash.")
+
     deleted_at = (
         datetime.now(timezone.utc).isoformat()
-        if move_to_trash else None
+        if move_to_trash
+        else None
     )
 
     result = (
@@ -45,7 +74,44 @@ def change_trash_status(report_id, move_to_trash):
     if not result.data:
         raise ValueError("Report unavailable.")
 
+def show_report_history(client, user_id):
+    with st.expander("Your recent activity"):
+        try:
+            events = (
+                client.table("report_activity")
+                .select("report_id,action,created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .limit(30)
+                .execute()
+                .data
+            )
+        except Exception:
+            st.warning("Could not load activity history. Please try again.")
+            return
 
+        if not events:
+            st.caption("New saves, moves to Trash, and restores will appear here.")
+            return
+
+        labels = {
+            "saved": "Report saved",
+            "trashed": "Moved to Trash",
+            "restored": "Report restored",
+        }
+
+        st.dataframe(
+            [
+                {
+                    "Action": labels.get(event["action"], event["action"]),
+                    "Time (UTC)": event["created_at"],
+                    "Report ID": event["report_id"],
+                }
+                for event in events
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
 def show_my_reports():
     st.header("My Reports")
     client = get_user_client()
@@ -58,6 +124,7 @@ def show_my_reports():
     if not user:
         st.info("Sign in using the sidebar to view your reports.")
         return
+    show_report_history(client, user.id)
 
     # Clear the previous confirmation before rendering its widget again.
     confirmation_key = st.session_state.pop(
@@ -153,7 +220,7 @@ def show_my_reports():
                     disabled=not confirmed,
                 ):
                     try:
-                        change_trash_status(report_id, True)
+                        change_trash_status(report_id, True, confirmed=confirmed)
                     except Exception:
                         st.error(
                             "Could not move the report to Trash. "

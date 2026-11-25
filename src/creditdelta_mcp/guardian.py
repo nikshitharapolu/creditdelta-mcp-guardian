@@ -120,6 +120,53 @@ class PolicyEngine:
             "critical",
             ("Unknown tools are denied by default.",),
         )
+    
+    def evaluate_report_action(
+        self,
+        action: str,
+        *,
+        authenticated_user_id: str | None,
+        report_owner_id: str | None,
+    ) -> PolicyResult:
+        """Evaluate an account report action using verified identity.
+
+        The caller must obtain the user ID from authenticated Supabase
+        identity and the owner ID from the stored report—not form inputs.
+        Supabase row-level security remains the ownership enforcement.
+        """
+        if not authenticated_user_id:
+            return PolicyResult(
+                Decision.DENY,
+                "high",
+                ("Sign in to access saved reports.",),
+            )
+
+        if action not in {"read_report", "trash_report", "restore_report"}:
+            return PolicyResult(
+                Decision.DENY,
+                "high",
+                ("Unknown report actions are denied.",),
+            )
+
+        if report_owner_id != authenticated_user_id:
+            return PolicyResult(
+                Decision.DENY,
+                "high",
+                ("Report unavailable or not owned by this account.",),
+            )
+
+        if action == "trash_report":
+            return PolicyResult(
+                Decision.REQUIRE_APPROVAL,
+                "medium",
+                ("Moving a report to Trash requires confirmation.",),
+            )
+
+        return PolicyResult(
+            Decision.ALLOW,
+            "low",
+            ("The signed-in user owns this report.",),
+        )
 
     def _is_within_allowed_directory(self, requested: Path) -> bool:
         try:
