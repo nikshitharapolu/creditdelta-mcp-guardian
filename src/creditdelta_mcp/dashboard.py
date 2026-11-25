@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+from creditdelta_mcp.auth import show_account
+from creditdelta_mcp.my_reports import save_report, show_my_reports
 import uuid
 from pathlib import Path
 from typing import Any
@@ -108,17 +110,45 @@ def show_result(result: dict[str, Any]) -> None:
         st.json(result)
 
 
+def remember_report_edit() -> None:
+    """Keep draft data separate from Streamlit's disposable widget state."""
+    st.session_state.report_draft = st.session_state.report_editor
+
+
+def resolve_report_action(executor, approval_id, approve):
+    """Resolve once and retain the outcome for both pages."""
+    outcome = executor.resolve_approval(approval_id, approve)
+    if approval_id == st.session_state.get("report_approval_id"):
+        snapshot = st.session_state.get("report_pending_snapshot", {})
+        st.session_state.report_save_filename = snapshot.get("filename", "report")
+        st.session_state.report_save_result = outcome
+        for key in ("report_approval_id", "report_pending_snapshot", "report_pending_review"):
+            st.session_state.pop(key, None)
+    st.session_state.last_approval_result = outcome
+    return outcome
+
+
 def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
     st.header("Explore Companies")
-    st.caption("1. Find a company  →  2. Compare numbers  →  3. Review and save or download")
+    st.caption("1. Find a company → 2. Compare numbers → 3. Review and download")
     st.caption("Compare public financial facts reported to the U.S. SEC.")
     if not os.getenv("SEC_USER_AGENT"):
         st.info("For responsible SEC access, set SEC_USER_AGENT to your name and email.")
 
+    if "company_query_input" not in st.session_state:
+        st.session_state.company_query_input = st.session_state.get(
+            "company_query_saved", ""
+        )
+
     with st.form("company_search"):
-        query = st.text_input("Company name or ticker", placeholder="AAPL or Apple")
+        query = st.text_input(
+            "Company name or ticker",
+            placeholder="AAPL or Apple",
+            key="company_query_input",
+        )
         search = st.form_submit_button("Search", type="primary")
     if search:
+        st.session_state.company_query_saved = query
         try:
             with st.spinner("Searching SEC companies…"):
                 st.session_state.company_matches = sec.search_company(query, 10)
@@ -151,6 +181,7 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
                 st.session_state.financial_history = latest_periods(facts, metric, form, 4)
                 st.session_state.pop("generated_report", None)
                 st.session_state.pop("report_editor", None)
+                st.session_state.pop("report_draft", None)
                 st.session_state.pop("report_save_result", None)
         except Exception as exc:
             st.error(str(exc))
@@ -176,19 +207,23 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
 
     st.divider()
     st.subheader("Create your report")
-    st.caption("Review the draft, then download it or save a copy for this browser session.")
+    st.caption("Review and edit the draft, then download your report.")
     generation_count = st.session_state.get("generation_count", 0)
     if st.button("Generate AI report", type="primary", disabled=generation_count >= 5):
         api_key = os.getenv("GEMINI_API_KEY")
         model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        diagnostics = []
         with st.spinner("Generating grounded report…"):
             report, source = generate_report(
                 result, api_key, model,
                 groq_api_key=os.getenv("GROQ_API_KEY"),
                 groq_model=os.getenv("REPORT_GROQ_MODEL", "openai/gpt-oss-20b"),
+                diagnostics=diagnostics,
             )
+        st.session_state.report_diagnostics = diagnostics
         st.session_state.generated_report = report
         st.session_state.report_editor = report
+        st.session_state.report_draft = report
         st.session_state.report_source = source
         st.session_state.generation_count = generation_count + 1
     if generation_count >= 5:
@@ -201,123 +236,109 @@ def company_analysis(sec: SECClient, executor: GuardedExecutor) -> None:
             st.success(f"AI draft generated with {provider}. Review it against the SEC facts below.")
         else:
             st.info("AI report providers were unavailable or not configured. A template report was created from the SEC facts.")
-        edited = st.text_area("Review and edit report", height=420, key="report_editor")
+        if st.session_state.get("report_diagnostics"):
+            with st.expander("Report generation status"):
+                st.table(st.session_state.report_diagnostics)
+                st.caption("Status codes only. No API keys, prompts, or raw provider errors are shown.")
+        if "report_editor" not in st.session_state:
+            st.session_state.report_editor = st.session_state.get("report_draft", report)
+        edited = st.text_area("Review and edit report", height=420, key="report_editor",
+                              on_change=remember_report_edit)
+        st.session_state.report_draft = edited
         safe_name = "-".join(
             part for part in result["company"].lower().replace(".", "").split() if part.isalnum()
         ) or "company"
         filename = f"{safe_name}-{result['metric']}-report.md"
 
-        save_context = report_save_context(result, filename, edited)
-        save_col, download_col = st.columns(2)
+        # save_context = report_save_context(result, filename, edited)
+        # save_col, download_col = st.columns(2)
 
-        # Option 1: Save inside the application using Guardian approval.
-        if save_col.button(
-            "Save report",
-            key="save_report",
-            disabled="report_approval_id" in st.session_state,
-        ):
-            outcome = executor.propose(
-                "write_file",
-                {
-                    "path": str(executor.reports_directory / filename),
-                    "content": edited,
-                },
-                context=save_context,
-            )
-            st.session_state.pop("report_save_result", None)
+        # # Option 1: Save inside the application using Guardian approval.
+        # if save_col.button(
+        #     "Save report",
+        #     key="save_report",
+        #     disabled="report_approval_id" in st.session_state or not edited.strip(),
+        # ):
+        #     outcome = executor.propose(
+        #         "write_file",
+        #         {
+        #             "path": str(executor.reports_directory / filename),
+        #             "content": edited,
+        #         },
+        #         context=save_context,
+        #     )
+        #     st.session_state.pop("report_save_result", None)
 
-            if outcome["decision"] == "REQUIRE_APPROVAL":
-                st.session_state.report_approval_id = outcome["approval_id"]
-                st.session_state.report_pending_snapshot = report_snapshot(filename, edited, save_context)
-                st.session_state.report_pending_review = outcome
-            elif outcome["status"] == "EXECUTED":
-                st.session_state.report_save_result = outcome
-            else:
-                st.session_state.report_save_blocked = outcome
+        #     if outcome["decision"] == "REQUIRE_APPROVAL":
+        #         st.session_state.report_approval_id = outcome["approval_id"]
+        #         st.session_state.report_pending_snapshot = report_snapshot(filename, edited, save_context)
+        #         st.session_state.report_pending_review = outcome
+        #     elif outcome["status"] == "EXECUTED":
+        #         st.session_state.report_save_result = outcome
+        #     else:
+        #         st.session_state.report_save_blocked = outcome
 
-            st.rerun()
+        #     st.rerun()
 
 
-        # Option 2: Download directly without storing it in the application.
-        download_col.download_button(
+        # # Option 2: Download directly without storing it in the application.
+        # download_col.download_button(
+        #     "Download report",
+        #     data=edited,
+        #     file_name=filename,
+        #     mime="text/markdown",
+        #     key="download_report",
+        # )
+
+
+        # if st.session_state.get("report_save_blocked"):
+        #     show_result(st.session_state.pop("report_save_blocked"))
+        # approval_id = st.session_state.get("report_approval_id")
+        # if approval_id:
+        #     snapshot = st.session_state.get("report_pending_snapshot", {})
+        #     st.info("Report submitted. Open Pending Actions & History to review and approve or cancel this save.")
+        #     st.caption(f"Pending file: {snapshot.get('filename', 'report')}")
+        #     if not snapshot_matches(snapshot, filename, edited, save_context):
+        #         st.warning("You edited the draft after submitting it. Cancel the old request in Pending Actions, then submit this version.")
+        # save_result = st.session_state.get("report_save_result")
+        # if save_result:
+        #     status = save_result.get("status")
+        #     saved_name = st.session_state.get("report_save_filename", filename)
+        #     if status in {"APPROVED_AND_EXECUTED", "EXECUTED"}:
+        #         st.success(f"Submitted report saved as {saved_name}. Later draft edits are not included in that saved copy.")
+        #     elif status == "REJECTED":
+        #         st.info("Save cancelled. Your draft is still available to edit or download.")
+        #     else:
+        #         show_result(save_result)
+        st.download_button(
             "Download report",
             data=edited,
             file_name=filename,
             mime="text/markdown",
             key="download_report",
+            type="primary",
+            disabled=not edited.strip(),
         )
-
-
-        # Show inline confirmation when Guardian requires approval.
-        if st.session_state.get("report_save_blocked"):
-            show_result(st.session_state.pop("report_save_blocked"))
-        approval_id = st.session_state.get("report_approval_id")
-
-        if approval_id:
-            snapshot = st.session_state.get("report_pending_snapshot", {})
-            current_matches = snapshot_matches(snapshot, filename, edited, save_context)
-            if not any(item["approval_id"] == approval_id for item in executor.list_pending()):
-                for key in ("report_approval_id", "report_pending_snapshot", "report_pending_review"):
-                    st.session_state.pop(key, None)
-                st.rerun()
-            st.caption(f"Pending file: {snapshot.get('filename', 'previous report')}")
-            if not current_matches:
-                st.warning("The draft or selected analysis changed. Cancel this pending save and submit the updated report.")
-            with st.expander("Review the exact draft awaiting confirmation"):
-                st.text(snapshot.get("content", "Cancel and submit again to review this older pending action."))
-            if st.session_state.get("report_pending_review", {}).get("ai_review", {}).get("status") == "unavailable":
-                st.warning("AI review was unavailable. Confirm only after checking the draft yourself.")
-            st.warning(
-                "Saving this report changes stored application data. "
-                "Do you want to approve this action?"
-            )
-
-            approve_col, reject_col, _ = st.columns([1, 1, 3])
-
-            if approve_col.button(
-                "Approve and save",
-                type="primary",
-                key="approve_report_save",
-                disabled=not current_matches,
+        if st.session_state.get("signed_in"):
+            if st.button(
+                "Save to My Reports",
+                key="save_private_report",
+                disabled=not edited.strip(),
             ):
                 try:
-                    result = executor.resolve_approval(approval_id, True)
-
-                    st.session_state.report_save_result = result
-                    del st.session_state.report_approval_id
-
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not save the report: {exc}")
-
-            if reject_col.button(
-                "Cancel save",
-                key="reject_report_save",
-            ):
-                try:
-                    executor.resolve_approval(approval_id, False)
-
-                    del st.session_state.report_approval_id
-                    st.session_state.report_save_rejected = True
-
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not reject the request: {exc}")
-
-
-        # Display the final outcome after the page reruns.
-        save_result = st.session_state.get("report_save_result")
-
-        if save_result and save_result.get("status") == "APPROVED_AND_EXECUTED":
-            st.success(
-                f"Report saved securely to the workspace as `{filename}`. "
-                "The action was recorded in the audit trail."
-            )
-        elif save_result and save_result.get("status") == "DENIED_BY_POLICY":
-            show_result(save_result)
-
-        if st.session_state.pop("report_save_rejected", False):
-            st.info("Report save rejected. Nothing was written to the workspace.")
+                    save_report(
+                        title=f"{result['company']} — {result['metric']}",
+                        company=result["company"],
+                        metric=result["metric"],
+                        content=edited,
+                    )
+                except Exception:
+                    st.error("Could not save. Check your login and try again.")
+                else:
+                    st.success("Saved. Open My Reports to view it.")
+        else:
+            st.caption("Sign in to save reports and access them later.")
+        st.caption("Download a copy to keep on your computer.")
 
 
 def guardian_playground(executor: GuardedExecutor) -> None:
@@ -376,6 +397,14 @@ def guardian_playground(executor: GuardedExecutor) -> None:
 def approvals_and_audit(executor: GuardedExecutor) -> None:
     st.header("Pending Actions & History")
     st.caption("These are your session’s actions. Self-confirmation is not independent authorization.")
+    if "last_approval_result" in st.session_state:
+        outcome = st.session_state.last_approval_result
+        if outcome.get("status") == "APPROVED_AND_EXECUTED":
+            st.success("Action completed and recorded in History.")
+        elif outcome.get("status") == "REJECTED":
+            st.info("Action cancelled. Nothing was executed.")
+        else:
+            show_result(outcome)
     approvals_tab, audit_tab = st.tabs(["Pending actions", "History"])
     with approvals_tab:
         pending = executor.list_pending()
@@ -389,16 +418,27 @@ def approvals_and_audit(executor: GuardedExecutor) -> None:
                 args = item["arguments"]
                 if "path" in args:
                     st.write("File:", Path(args["path"]).name)
-                if "content" in args:
+                is_report = item["approval_id"] == st.session_state.get("report_approval_id")
+                changed = False
+                if is_report:
+                    snapshot = st.session_state.get("report_pending_snapshot", {})
+                    st.caption("Exact submitted draft — this is the version the action will save.")
+                    st.text(snapshot.get("content", "Preview unavailable"))
+                    changed = st.session_state.get("report_draft") != snapshot.get("content")
+                    if changed:
+                        st.warning("Your current draft differs from this request. Cancel it and submit the updated draft from Explore Companies.")
+                    if st.session_state.get("report_pending_review", {}).get("ai_review", {}).get("status") == "unavailable":
+                        st.warning("AI review was unavailable. Check the submitted draft yourself before approving.")
+                elif "content" in args:
                     st.text(args["content"])
                 with st.expander("Action details (sensitive values redacted)"):
                     st.json(args)
                 yes, no, _ = st.columns([1, 1, 4])
-                if yes.button("Approve", key="yes-" + item["approval_id"], type="primary"):
-                    executor.resolve_approval(item["approval_id"], True)
+                if yes.button("Approve", key="yes-" + item["approval_id"], type="primary", disabled=changed):
+                    resolve_report_action(executor, item["approval_id"], True)
                     st.rerun()
-                if no.button("Reject", key="no-" + item["approval_id"]):
-                    executor.resolve_approval(item["approval_id"], False)
+                if no.button("Cancel save" if is_report else "Reject", key="no-" + item["approval_id"]):
+                    resolve_report_action(executor, item["approval_id"], False)
                     st.rerun()
     with audit_tab:
         audit = executor.list_audit(100)
@@ -596,8 +636,10 @@ def main() -> None:
     sec, executor = get_sec_client(), get_session_executor()
     with st.sidebar:
         st.header("CreditDelta")
+        user = show_account()
+        st.divider()
         advanced = st.checkbox("Show security demos", value=False)
-        pages = ["Explore Companies", "Pending Actions & History"]
+        pages = ["Explore Companies", "My Reports", "Pending Actions & History"]
         if advanced:
             pages += ["Security Demo", "Test Results"]
         page = st.radio("Navigate", pages, label_visibility="collapsed")
@@ -610,6 +652,8 @@ def main() -> None:
         guardian_playground(executor)
     elif page == "Pending Actions & History":
         approvals_and_audit(executor)
+    elif page == "My Reports":
+        show_my_reports()
     else:
         security_benchmark(executor)
 
