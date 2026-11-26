@@ -22,8 +22,7 @@ def app(tmp_path, monkeypatch):
     at.session_state.financial_result = result
     at.session_state.generated_report = deterministic_report(result)
     at.session_state.report_source = 'template'
-    at.run()
-    assert not at.exception
+    navigate(at, 'Explore Companies')
     return at
 
 
@@ -38,7 +37,7 @@ def button(at, label):
 
 def test_edited_draft_survives_page_navigation(app):
     app.text_area(key='report_editor').set_value('Edited public report draft.').run()
-    navigate(app, 'Pending Actions & History')
+    navigate(app, 'Ask CreditDelta')
     navigate(app, 'Explore Companies')
     assert app.text_area(key='report_editor').value == 'Edited public report draft.'
 
@@ -47,6 +46,6 @@ def test_edited_draft_survives_page_navigation(app):
 
 def test_intentionally_empty_draft_stays_empty(app):
     app.text_area(key='report_editor').set_value('').run()
-    navigate(app, 'Pending Actions & History')
+    navigate(app, 'Ask CreditDelta')
     navigate(app, 'Explore Companies')
     assert app.text_area(key='report_editor').value == ''
