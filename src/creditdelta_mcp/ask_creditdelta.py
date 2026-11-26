@@ -235,6 +235,7 @@ def show_ask_creditdelta(sec, executor):
                         "content": content,
                         "source": source,
                         "saved": False,
+                        "comparison": result,
                     }
                 except ValueError as exc:
                     st.error(str(exc))
@@ -250,6 +251,18 @@ def show_ask_creditdelta(sec, executor):
         return
 
     st.subheader(f"Report: {draft['company']}")
+    comparison = draft.get("comparison")
+    if comparison:
+        current = comparison["current"]
+        previous = comparison["previous"]
+        change = comparison["percent_change"]
+        metric = comparison["metric"].replace("_", " ").title()
+
+        st.caption(f"{metric} · {previous['end']} → {current['end']}")
+        latest, prior, delta = st.columns(3)
+        latest.metric("Latest", f"${current['value']:,.0f}")
+        prior.metric("Previous", f"${previous['value']:,.0f}")
+        delta.metric("Change", "N/A" if change is None else f"{change:+.2f}%")
     st.caption(f"Report source: {draft['source']}. Review the draft below.")
     # Plain text avoids rendering model-generated links or remote images.
     st.text(draft["content"])

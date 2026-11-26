@@ -641,9 +641,9 @@ def main() -> None:
         user = show_account()
         st.divider()
         advanced = st.checkbox("Show security demos", value=False)
-        pages = ["Explore Companies", "Ask CreditDelta", "My Reports", "Pending Actions & History"]
+        pages = ["Ask CreditDelta", "Explore Companies", "My Reports"]
         if advanced:
-            pages += ["Security Demo", "Test Results"]
+            pages += ["Security Demo", "Pending Actions & History", "Test Results"]
         page = st.radio("Navigate", pages, label_visibility="collapsed")
         st.divider()
         st.caption("My Reports stores private reports in your account.")
