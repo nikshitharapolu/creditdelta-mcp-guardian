@@ -53,24 +53,25 @@ def test_guardian_gate(monkeypatch, decision, should_stop):
     monkeypatch.setattr(ask, "st", SimpleNamespace(session_state=state))
 
     calls = []
+    matches = [{"ticker": "AAPL"}]
 
-    def inspect(tool, arguments, context):
+    def call_research_tool(tool, arguments, *, context):
         calls.append((tool, arguments, context))
-        return {"final_decision": decision}
+        return {
+            "guardian": {"final_decision": decision},
+            "result": None if should_stop else matches,
+        }
 
-    executor = SimpleNamespace(inspect=inspect)
+    monkeypatch.setattr(ask, "call_research_tool", call_research_tool)
+
     arguments = {"query": "AAPL"}
     request = "Compare Apple's revenue"
 
     if should_stop:
-        with pytest.raises(ValueError):
-            ask.check_action(
-                executor, "search_company", arguments, request
-            )
+        with pytest.raises(ValueError, match="Guardian did not allow"):
+            ask.run_research("search_company", arguments, request)
     else:
-        ask.check_action(
-            executor, "search_company", arguments, request
-        )
+        assert ask.run_research("search_company", arguments, request) == matches
 
     assert calls == [("search_company", arguments, request)]
     assert state.ask_check["final_decision"] == decision

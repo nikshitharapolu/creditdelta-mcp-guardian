@@ -4,6 +4,7 @@ import json
 import os
 
 import streamlit as st
+import re
 
 from creditdelta_mcp.finance import METRICS, compare_latest_periods
 from creditdelta_mcp.my_reports import save_report
@@ -12,6 +13,7 @@ from creditdelta_mcp.report_generator import (
     _groq_narrative,
     generate_report,
 )
+from creditdelta_mcp.research_client import call_research_tool
 
 
 def validate_plan(raw):
@@ -35,7 +37,14 @@ def validate_plan(raw):
     ):
         raise ValueError("Invalid company, metric, or reporting period.")
 
-    plan["company"] = plan["company"].strip()
+    company = plan["company"].strip()
+    # Accept planner output like "Apple/AAPL" or "Apple (AAPL)".
+    match = re.fullmatch(
+        r"[^()/]+(?:/\s*([A-Z][A-Z0-9.-]{0,9})"
+        r"|\(\s*([A-Z][A-Z0-9.-]{0,9})\s*\))",
+        company,
+    )
+    plan["company"] = (match.group(1) or match.group(2)) if match else company
     return plan
 
 
@@ -96,18 +105,14 @@ def plan_request(request):
     )
 
 
-def check_action(executor, tool, arguments, request):
-    outcome = executor.inspect(tool, arguments, context=request)
-    st.session_state.ask_check = outcome
+def run_research(tool, arguments, request):
+    response = call_research_tool(tool, arguments, context=request)
+    review = response["guardian"]
+    st.session_state.ask_check = review
 
-    decision = outcome.get("final_decision", outcome.get("decision"))
-    if decision == "DENY":
-        raise ValueError("Guardian blocked this request.")
-    if decision != "ALLOW":
-        raise ValueError(
-            "Guardian requires additional review. This first assistant "
-            "version stops here; use Explore Companies for manual analysis."
-        )
+    if review.get("final_decision") != "ALLOW":
+        raise ValueError("Guardian did not allow this action.")
+    return response["result"]
 
 
 def show_ask_creditdelta(sec, executor):
@@ -173,13 +178,11 @@ def show_ask_creditdelta(sec, executor):
         st.session_state.pop("ask_draft", None)
         try:
             with st.spinner("Guardian is reviewing the search…"):
-                check_action(
-                    executor,
+                matches = run_research(
                     "search_company",
-                    {"query": plan["company"]},
+                    {"query": plan["company"], "limit": 10},
                     task["request"],
                 )
-                matches = sec.search_company(plan["company"], 10)
             st.session_state.ask_matches = matches
             if not matches:
                 st.info("No match found. Try the company's stock ticker.")
@@ -208,8 +211,7 @@ def show_ask_creditdelta(sec, executor):
                 st.session_state.generation_count = count + 1
                 try:
                     with st.spinner("Reviewing the action and preparing report…"):
-                        check_action(
-                            executor,
+                        result = run_research(
                             "compare_financials",
                             {
                                 "cik": selected["cik"],
@@ -217,11 +219,6 @@ def show_ask_creditdelta(sec, executor):
                                 "form": plan["form"],
                             },
                             task["request"],
-                        )
-                        result = compare_latest_periods(
-                            sec.company_facts(selected["cik"]),
-                            plan["metric"],
-                            plan["form"],
                         )
                         content, source = generate_report(
                             result,
