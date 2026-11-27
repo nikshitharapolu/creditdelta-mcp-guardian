@@ -2,11 +2,11 @@
 
 import json
 import os
-
-import streamlit as st
 import re
 
-from creditdelta_mcp.finance import METRICS, compare_latest_periods
+import streamlit as st
+
+from creditdelta_mcp.finance import METRICS
 from creditdelta_mcp.my_reports import save_report
 from creditdelta_mcp.report_generator import (
     _gemini_narrative,
@@ -115,10 +115,18 @@ def run_research(tool, arguments, request):
     return response["result"]
 
 
+def _compact_usd(value):
+    sign = "-" if value < 0 else ""
+    for scale, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(value) >= scale:
+            return f"{sign}${abs(value) / scale:,.1f}{suffix}"
+    return f"{sign}${abs(value):,.0f}"
+
+
 def show_ask_creditdelta(sec, executor):
     st.header("Ask CreditDelta")
     st.caption(
-        "Example: Compare Apple's quarterly revenue and prepare a report. "
+        "Try: Compare Apple's annual revenue. "
         "Your request goes to the configured AI providers. "
         "Do not enter private information or credentials."
     )
@@ -127,7 +135,7 @@ def show_ask_creditdelta(sec, executor):
         request = st.text_input(
             "What would you like to research?",
             max_chars=1000,
-            placeholder="Compare Google's annual revenue",
+            placeholder="Compare Apple's annual revenue",
         )
         submitted = st.form_submit_button("Prepare task")
 
@@ -173,7 +181,7 @@ def show_ask_creditdelta(sec, executor):
     )
     st.caption(f"Task interpreted by {task['provider']}.")
 
-    if st.button("Confirm task and find company"):
+    if st.button("Find company"):
         st.session_state.pop("ask_matches", None)
         st.session_state.pop("ask_draft", None)
         try:
@@ -260,9 +268,21 @@ def show_ask_creditdelta(sec, executor):
 
         st.caption(f"{metric} · {previous['end']} → {current['end']}")
         latest, prior, delta = st.columns(3)
-        latest.metric("Latest", f"${current['value']:,.0f}")
-        prior.metric("Previous", f"${previous['value']:,.0f}")
+        latest.metric("Latest", _compact_usd(current["value"]))
+        prior.metric("Previous", _compact_usd(previous["value"]))
         delta.metric("Change", "N/A" if change is None else f"{change:+.2f}%")
+        with st.expander("View source filings"):
+            cik = str(comparison.get("cik", ""))
+            for label, period in (("Latest", current), ("Previous", previous)):
+                accession = period.get("accession") or ""
+                st.text(f"{label} period ending {period['end']}: {accession or 'No accession provided'}")
+                if re.fullmatch(r"[0-9]{1,10}", cik) and re.fullmatch(
+                    r"[0-9]{10}-[0-9]{2}-[0-9]{6}", accession
+                ):
+                    folder = accession.replace("-", "")
+                    url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{folder}/{accession}-index.htm"
+                    st.markdown(f"[Open {label.lower()} SEC filing]({url})")
+
     st.caption(f"Report source: {draft['source']}. Review the draft below.")
     # Plain text avoids rendering model-generated links or remote images.
     st.text(draft["content"])
