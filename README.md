@@ -1,17 +1,23 @@
 # CreditDelta MCP Guardian
 
-Optional [AI-assisted Guardian review](docs/ai-guardian.md) now checks the intent
-of protected actions, with fixed rules and human approval remaining authoritative.
-The playground shows rule, AI, and final decisions. See the guide for activation,
-failure behavior, privacy limits, and live rules-versus-AI evaluation.
+CreditDelta compares public-company financial metrics using SEC filings. Its
+Streamlit dashboard turns plain-language requests into research plans, and its
+MCP server checks research requests through Guardian before fetching SEC data.
+Fixed rules and human approval remain authoritative when
+[AI-assisted review](docs/ai-guardian.md) is enabled.
 
-CreditDelta MCP Guardian is a local, evidence-backed financial research server
-and security control layer for AI tool calls. CreditDelta exposes public SEC
-financial comparisons through MCP; Guardian decides whether requested actions
-are allowed, denied, or require explicit human approval.
+## Try it
 
-Everything runs locally using free and open-source software. No paid API or
-cloud service is required.
+1. Open the [live demo](https://creditdelta-mcp-guardian.streamlit.app/) and select
+   **Ask CreditDelta**.
+2. Enter **Compare Apple’s annual revenue** and click **Prepare task**. The plan
+   should specify revenue and annual filings (10-K).
+3. Click **Confirm task and find company**, then select **Apple Inc. (AAPL)**.
+   Apple Hospitality REIT (APLE) can still appear as a separate match.
+4. Generate the report. Compare the two annual values and the percentage change,
+   then check the SEC filing references in the report and open **Guardian security
+   check** to see how the MCP server handled the request.
+5. Download the report, or sign in to save it to **My Reports**.
 
 ## Why this exists
 
@@ -225,6 +231,28 @@ false-positive rate, 30/30 correct financial comparisons, and 30/30 grounded
 deterministic reports with no unsupported numeric claims. These fixed cases are
 maintainer-authored regression cases rather than an independent external
 benchmark; rerun the evaluator locally before quoting results or latency.
+
+## Optional local Go company lookup
+
+The dashboard uses Python for company lookup by default. To try the Go lookup
+behind MCP, install Go and run the following from the repository root:
+
+```bash
+export SEC_USER_AGENT="Your Name your-email@example.com"
+go run services/company_lookup/main.go
+```
+
+Leave the service running. In another terminal, with your Python environment
+active, check the search order and start the dashboard:
+
+```bash
+curl -fsS 'http://127.0.0.1:8787/companies?q=Apple&limit=10'
+CREDITDELTA_GO_LOOKUP=1 python -m streamlit run src/creditdelta_mcp/dashboard.py
+```
+
+The lookup should return AAPL first and retain other Apple matches. Guardian
+still checks the MCP request before Go looks up the company. The hosted demo
+does not require the Go service.
 
 ## Docker
 
